@@ -256,7 +256,7 @@ function App() {
           <span className="brand-mark"><Activity size={18} /></span>
           <strong>ARHA</strong>
         </div>
-        <button className="icon-button" title="Search onClick={() => alert('Search feature coming soon!')}"><Search size={20} /></button>
+                    <button className="icon-button" title="Search" onClick={() => alert('Search feature coming soon!')}>
             <div className="profile-dot" onClick={() => alert('Profile coming soon!')} style={{cursor: 'pointer'}}><UserCircle size={26} /></div>          "><UserCircle size={26} /></div>
       </header>
 
