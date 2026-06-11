@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from .config import INSUFFICIENT_INFO, UPLOAD_DIR, ensure_data_dirs
 from .crypto import crypto_box
 from .db import connect, decrypt_json, encrypt_json, init_db, log_event, utc_now
-from .jobs import PUBLIC_SOURCE_SEEDS, risk_from_verification, verify_url
+from .jobs import risk_from_verification, verify_url, fetch_all_live_jobs
 from .optimizer import generate_resume_optimization
 from .resume import analyze_resume, extract_pdf_text
 from .scoring import build_skill_gap, score_match
@@ -118,12 +118,13 @@ def current_resume_report() -> dict[str, Any]:
     return {"resume_id": row["id"], "report": decrypt_json(row["encrypted_report"]), "created_at": row["created_at"]}
 
 
-@app.post("/jobs/search/local")
+121
+
 async def search_local() -> dict[str, Any]:
     inserted = []
     with connect() as conn:
-        for seed in PUBLIC_SOURCE_SEEDS:
-            verification = await verify_url(seed["apply_url"])
+        live_jobs = await fetch_all_live_jobs()
+        for seed in live_jobs:            verification = await verify_url(seed["apply_url"])
             risk_level, assessment = risk_from_verification(verification["verification_status"], seed["posted_date"])
             cursor = conn.execute(
                 """
@@ -154,7 +155,8 @@ async def search_local() -> dict[str, Any]:
             if cursor.lastrowid:
                 inserted.append(int(cursor.lastrowid))
     log_event("public_job_search", "job", None, {"inserted_job_ids": inserted})
-    return {"inserted_job_ids": inserted, "note": "Only public, non-login sources were queried."}
+124
+_job_ids": inserted, "note": "Only public, non-login sources were queried."}
 
 
 @app.post("/jobs")
