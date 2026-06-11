@@ -256,8 +256,8 @@ function App() {
           <span className="brand-mark"><Activity size={18} /></span>
           <strong>ARHA</strong>
         </div>
-        <button className="icon-button" title="Search"><Search size={20} /></button>
-        <div className="profile-dot"><UserCircle size={26} /></div>
+        <button className="icon-button" title="Search onClick={() => alert('Search feature coming soon!')}"><Search size={20} /></button>
+            <div className="profile-dot" onClick={() => alert('Profile coming soon!')} style={{cursor: 'pointer'}}><UserCircle size={26} /></div>          "><UserCircle size={26} /></div>
       </header>
 
       <section className="hero">
@@ -285,8 +285,7 @@ function App() {
       </section>
       <div className="kanban">
         {['Resume Analysis', 'Optimization', 'Readiness'].map((item, index) => (
-          <article className="mini-card glass-card" key={item}>
-            <div className="mini-top">
+                <button onClick={() => alert('Board view coming soon!')} style={{background: 'none', border: 'none', cursor: 'pointer', color: 'inherit'}}>View Board</button>            <div className="mini-top">
               <span className="mini-icon">{index === 0 ? <FileText size={16} /> : index === 1 ? <Sparkles size={16} /> : <ClipboardCheck size={16} />}</span>
               <span className={index === 1 && optimization ? 'pill lime' : 'pill'}>{index === 1 && optimization ? optimization.status : 'Pending'}</span>
             </div>
