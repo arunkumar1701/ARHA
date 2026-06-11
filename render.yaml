@@ -1,4 +1,30 @@
 services:
+  - type: web
+    name: arha-backend
+    runtime: python
+    region: singapore
+    plan: free
+    buildCommand: "cd backend && pip install -r requirements.txt"
+    startCommand: "cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    disk:
+      name: arha-data
+      mountPath: /opt/render/project/src/backend/data
+      sizeGB: 1
+    envVars:
+      - key: ARHA_PASSPHRASE
+        sync: false
+      - key: ARHA_DATA_DIR
+        value: /opt/render/project/src/backend/data
+      - key: ARHA_DB_PATH
+        value: /opt/render/project/src/backend/data/arha.sqlite3
+      - key: ARHA_UPLOAD_DIR
+        value: /opt/render/project/src/backend/data/uploads
+      - key: ARHA_SALT_PATH
+        value: /opt/render/project/src/backend/data/arha.salt
+      - key: ARHA_FRONTEND_URL
+        sync: false
+
   - type: cron
     name: arha-public-discovery
     runtime: python
