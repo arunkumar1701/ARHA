@@ -1,0 +1,9 @@
+backend/data/
+backend/test-data/
+frontend/dist/
+frontend/node_modules/
+design-import/
+__pycache__/
+.pytest_cache/
+pytest-cache-files-*/
+*.pyc
