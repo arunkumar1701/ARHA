@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Any
+import os
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -13,10 +14,11 @@ from .optimizer import generate_resume_optimization
 from .resume import analyze_resume, extract_pdf_text
 from .scoring import build_skill_gap, score_match
 
+FRONTEND_URL = os.getenv("ARHA_FRONTEND_URL", "http://localhost:5173")
 app = FastAPI(title="ARHA V1", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", FRONTEND_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
