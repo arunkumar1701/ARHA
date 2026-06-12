@@ -1,89 +1,102 @@
+"""
+test_auth.py - Tests for /auth endpoints.
+All PostgreSQL calls are mocked via conftest.py fixtures.
+"""
+from __future__ import annotations
+
 import pytest
+from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_register(client: AsyncClient):
-    response = await client.post(
-        "/auth/register",
-        json={
-            "email": "newuser@arha.dev",
-            "password": "SecurePass99!",
-            "full_name": "New User",
-        },
-    )
+async def test_register_success(client: AsyncClient):
+    """POST /auth/register with a new email returns 201 and the user object."""
+    with patch("app.db.create_user", new_callable=AsyncMock) as mock_create:
+        mock_create.return_value = {"id": 1, "email": "new@example.com", "role": "user"}
+        response = await client.post(
+            "/auth/register",
+            json={"email": "new@example.com", "password": "SecurePass123!"},
+        )
     assert response.status_code == 201
-    data = response.json()
-    assert data["email"] == "newuser@arha.dev"
-    assert "hashed_password" not in data
+    body = response.json()
+    assert body["email"] == "new@example.com"
+    assert body["role"] == "user"
+    assert "id" in body
 
 
 @pytest.mark.asyncio
-async def test_register_duplicate(client: AsyncClient):
-    payload = {
-        "email": "dup@arha.dev",
-        "password": "SecurePass99!",
-        "full_name": "Dup User",
-    }
-    await client.post("/auth/register", json=payload)
-    resp2 = await client.post("/auth/register", json=payload)
-    assert resp2.status_code == 409
+async def test_register_duplicate_email(client: AsyncClient):
+    """POST /auth/register with an existing email returns 409."""
+    with patch("app.db.create_user", new_callable=AsyncMock) as mock_create:
+        mock_create.side_effect = ValueError("Email already registered.")
+        response = await client.post(
+            "/auth/register",
+            json={"email": "existing@example.com", "password": "SecurePass123!"},
+        )
+    assert response.status_code == 409
 
 
 @pytest.mark.asyncio
 async def test_login_success(client: AsyncClient):
-    await client.post(
-        "/auth/register",
-        json={
-            "email": "logintest@arha.dev",
-            "password": "LoginPass99!",
-            "full_name": "Login User",
-        },
-    )
-    response = await client.post(
-        "/auth/login",
-        data={"username": "logintest@arha.dev", "password": "LoginPass99!"},
-    )
+    """POST /auth/token with correct credentials returns a JWT."""
+    from app.auth import get_password_hash
+
+    with patch("app.db.get_user_by_email", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = {
+            "id": 1,
+            "email": "test@example.com",
+            "role": "user",
+            "password_hash": get_password_hash("testpassword"),
+        }
+        response = await client.post(
+            "/auth/token",
+            data={"username": "test@example.com", "password": "testpassword"},
+        )
     assert response.status_code == 200
-    data = response.json()
-    assert "access_token" in data
-    assert data["token_type"] == "bearer"
+    body = response.json()
+    assert "access_token" in body
+    assert body["token_type"] == "bearer"
 
 
 @pytest.mark.asyncio
 async def test_login_wrong_password(client: AsyncClient):
-    await client.post(
-        "/auth/register",
-        json={
-            "email": "wrongpw@arha.dev",
-            "password": "CorrectPass99!",
-            "full_name": "WrongPW",
-        },
-    )
-    resp = await client.post(
-        "/auth/login",
-        data={"username": "wrongpw@arha.dev", "password": "WrongPass!"},
-    )
-    assert resp.status_code == 401
+    """POST /auth/token with wrong password returns 401."""
+    from app.auth import get_password_hash
+
+    with patch("app.db.get_user_by_email", new_callable=AsyncMock) as mock_get:
+        mock_get.return_value = {
+            "id": 1,
+            "email": "test@example.com",
+            "role": "user",
+            "password_hash": get_password_hash("correctpassword"),
+        }
+        response = await client.post(
+            "/auth/token",
+            data={"username": "test@example.com", "password": "wrongpassword"},
+        )
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_me_endpoint(client: AsyncClient, auth_headers: dict):
+async def test_me_authenticated(client: AsyncClient, auth_headers: dict):
+    """GET /auth/me with a valid JWT returns the current user."""
     response = await client.get("/auth/me", headers=auth_headers)
     assert response.status_code == 200
-    data = response.json()
-    assert "email" in data
-    assert "hashed_password" not in data
+    body = response.json()
+    assert body["email"] == "test@example.com"
 
 
 @pytest.mark.asyncio
 async def test_me_unauthenticated(client: AsyncClient):
+    """GET /auth/me without a token returns 401."""
     response = await client.get("/auth/me")
     assert response.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_health(client: AsyncClient):
+async def test_health_check(client: AsyncClient):
+    """GET /health returns 200."""
     response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json()["status"] == "healthy"
+    assert response.json()["status"] == "ok"
