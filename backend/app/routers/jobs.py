@@ -1,13 +1,21 @@
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
-from pydantic import BaseModel
-from datetime import datetime
+"""
+routers/jobs.py - Job search, public opportunities, and application endpoints.
+All real-time data; no ORM, no mock responses.
+"""
+from __future__ import annotations
 
-from app.database import get_db
-from app.models import User, SavedJob, JobApplication
-from app.auth import get_current_user
+from typing import Any, Optional
+
+from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel
+
+from app.auth import CurrentUser, AdminUser
+from app.db import (
+    create_application,
+    approve_application,
+    get_user_applications,
+    get_opportunities,
+)
 from app.agents.job_search_agent import JobSearchAgent
 from app.agents.matching_agent import JobMatchingAgent
 
@@ -17,216 +25,113 @@ _search_agent = JobSearchAgent()
 _match_agent = JobMatchingAgent()
 
 
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
 class JobSearchRequest(BaseModel):
-    keywords: str
-    location: Optional[str] = "remote"
+    query: str
+    location: Optional[str] = None
     job_type: Optional[str] = None
     experience_level: Optional[str] = None
-    limit: int = 20
-
-
-class SaveJobRequest(BaseModel):
-    job_id: str
-    title: str
-    company: str
-    location: str
-    url: str
-    description: Optional[str] = None
-    salary_range: Optional[str] = None
-    job_type: Optional[str] = None
-    source: Optional[str] = None
+    remote: bool = True
 
 
 class ApplicationRequest(BaseModel):
-    saved_job_id: int
-    cover_letter: Optional[str] = None
-    resume_version: Optional[str] = None
+    job_id: str
+    job_title: str
+    company: str
+    resume_text: str
+    job_description: str
 
 
-class ApplicationStatusUpdate(BaseModel):
-    status: str  # applied, interviewing, offered, rejected, withdrawn
-    notes: Optional[str] = None
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
 
-
-@router.post("/search")
+@router.get("/search")
 async def search_jobs(
-    payload: JobSearchRequest,
-    current_user: User = Depends(get_current_user),
-):
-    """Search real-time jobs across multiple sources."""
+    q: str = Query(..., description="Job title, skill, or keyword"),
+    location: Optional[str] = Query(None),
+    remote: bool = Query(True),
+    page: int = Query(1, ge=1),
+) -> dict[str, Any]:
+    """Live job search via JobSearchAgent (Jobicy / Remotive / Arbeitnow)."""
     results = await _search_agent.search(
-        keywords=payload.keywords,
-        location=payload.location,
-        job_type=payload.job_type,
-        experience_level=payload.experience_level,
-        limit=payload.limit,
+        query=q,
+        location=location,
+        remote=remote,
+        page=page,
     )
-    return {"jobs": results, "total": len(results)}
+    return results
+
+
+@router.get("/opportunities")
+async def list_opportunities(
+    limit: int = Query(50, ge=1, le=200),
+    verified_only: bool = Query(False),
+) -> list[dict[str, Any]]:
+    """Return publicly discovered opportunities from the PostgreSQL cache."""
+    return await get_opportunities(limit=limit, verified_only=verified_only)
 
 
 @router.post("/match")
-async def match_jobs(
-    payload: JobSearchRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Search jobs and rank by AI match score against user resume."""
-    jobs = await _search_agent.search(
-        keywords=payload.keywords,
-        location=payload.location,
-        job_type=payload.job_type,
-        experience_level=payload.experience_level,
-        limit=payload.limit,
-    )
-    if not jobs:
-        return {"jobs": [], "total": 0}
-    # Fetch latest resume text for user
-    from app.models import Resume
-    result = await db.execute(
-        select(Resume)
-        .where(Resume.user_id == current_user.id)
-        .order_by(desc(Resume.created_at))
-        .limit(1)
-    )
-    resume = result.scalar_one_or_none()
-    resume_text = resume.raw_text if resume else ""
-    matched = await _match_agent.rank_jobs(jobs=jobs, resume_text=resume_text)
-    return {"jobs": matched, "total": len(matched)}
-
-
-@router.post("/save", status_code=status.HTTP_201_CREATED)
-async def save_job(
-    payload: SaveJobRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Save a job for later review — no auto-apply."""
-    existing = await db.execute(
-        select(SavedJob).where(
-            SavedJob.user_id == current_user.id,
-            SavedJob.job_id == payload.job_id,
-        )
-    )
-    if existing.scalar_one_or_none():
-        raise HTTPException(status_code=409, detail="Job already saved")
-    job = SavedJob(
-        user_id=current_user.id,
-        job_id=payload.job_id,
-        title=payload.title,
-        company=payload.company,
-        location=payload.location,
-        url=payload.url,
-        description=payload.description,
-        salary_range=payload.salary_range,
-        job_type=payload.job_type,
-        source=payload.source,
-    )
-    db.add(job)
-    await db.commit()
-    await db.refresh(job)
-    return job
-
-
-@router.get("/saved")
-async def get_saved_jobs(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(
-        select(SavedJob)
-        .where(SavedJob.user_id == current_user.id)
-        .order_by(desc(SavedJob.saved_at))
-    )
-    jobs = result.scalars().all()
-    return {"jobs": jobs, "total": len(jobs)}
-
-
-@router.delete("/saved/{job_id}")
-async def remove_saved_job(
-    job_id: int,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(
-        select(SavedJob).where(
-            SavedJob.id == job_id,
-            SavedJob.user_id == current_user.id,
-        )
-    )
-    job = result.scalar_one_or_none()
-    if not job:
-        raise HTTPException(status_code=404, detail="Saved job not found")
-    await db.delete(job)
-    await db.commit()
-    return {"message": "Job removed from saved list"}
+async def match_job(
+    resume_text: str,
+    job_description: str,
+    current_user: CurrentUser = None,  # optional auth
+) -> dict[str, Any]:
+    """Score a resume against a job description using JobMatchingAgent."""
+    result = await _match_agent.match(resume_text=resume_text, job_description=job_description)
+    return result
 
 
 @router.post("/apply", status_code=status.HTTP_201_CREATED)
-async def apply_to_job(
+async def apply_for_job(
     payload: ApplicationRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """User explicitly applies to a saved job — requires intentional user action."""
-    result = await db.execute(
-        select(SavedJob).where(
-            SavedJob.id == payload.saved_job_id,
-            SavedJob.user_id == current_user.id,
-        )
+    current_user: CurrentUser,
+) -> dict[str, Any]:
+    """
+    Create a job application (status='pending', requires admin approval).
+    Never auto-applies. The user must explicitly trigger this endpoint.
+    """
+    match = await _match_agent.match(
+        resume_text=payload.resume_text,
+        job_description=payload.job_description,
     )
-    saved = result.scalar_one_or_none()
-    if not saved:
-        raise HTTPException(status_code=404, detail="Saved job not found")
-    application = JobApplication(
-        user_id=current_user.id,
-        saved_job_id=payload.saved_job_id,
-        cover_letter=payload.cover_letter,
-        resume_version=payload.resume_version,
-        status="applied",
-        applied_at=datetime.utcnow(),
+    match_score = match.get("overall_score", 0.0)
+
+    application = await create_application(
+        user_id=current_user["id"],
+        job_id=payload.job_id,
+        job_title=payload.job_title,
+        company=payload.company,
+        match_score=match_score,
     )
-    db.add(application)
-    await db.commit()
-    await db.refresh(application)
-    return application
+    return {
+        "application_id": application["id"],
+        "status": application["status"],
+        "match_score": match_score,
+        "message": "Application submitted for review. Approval required before submission to employer.",
+    }
 
 
 @router.get("/applications")
-async def get_applications(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(
-        select(JobApplication)
-        .where(JobApplication.user_id == current_user.id)
-        .order_by(desc(JobApplication.applied_at))
-    )
-    apps = result.scalars().all()
-    return {"applications": apps, "total": len(apps)}
+async def list_applications(current_user: CurrentUser) -> list[dict[str, Any]]:
+    """List the current user's job applications."""
+    return await get_user_applications(current_user["id"])
 
 
-@router.patch("/applications/{app_id}")
-async def update_application_status(
-    app_id: int,
-    payload: ApplicationStatusUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    valid_statuses = {"applied", "interviewing", "offered", "rejected", "withdrawn"}
-    if payload.status not in valid_statuses:
-        raise HTTPException(status_code=400, detail=f"Status must be one of {valid_statuses}")
-    result = await db.execute(
-        select(JobApplication).where(
-            JobApplication.id == app_id,
-            JobApplication.user_id == current_user.id,
+@router.post("/applications/{application_id}/approve")
+async def approve(
+    application_id: int,
+    admin: AdminUser,
+) -> dict[str, Any]:
+    """Admin-only: approve a pending application."""
+    ok = await approve_application(application_id=application_id, approver_id=admin["id"])
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found or already processed.",
         )
-    )
-    app = result.scalar_one_or_none()
-    if not app:
-        raise HTTPException(status_code=404, detail="Application not found")
-    app.status = payload.status
-    if payload.notes:
-        app.notes = payload.notes
-    await db.commit()
-    await db.refresh(app)
-    return app
+    return {"application_id": application_id, "status": "approved"}
