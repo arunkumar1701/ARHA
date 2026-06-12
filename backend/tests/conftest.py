@@ -1,69 +1,77 @@
-import asyncio
+"""
+conftest.py - pytest fixtures for ARHA backend tests.
+All db calls are patched with AsyncMock so tests run without a real database.
+"""
+from __future__ import annotations
+
+import os
 import pytest
 import pytest_asyncio
+from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
-from app.main import app
-from app.database import Base, get_db
-from app.config import settings
+# Point to a dummy DB URL so config doesn't fail
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
+os.environ.setdefault("SECRET_KEY", "test-secret-key-32-chars-minimum!!")
+os.environ.setdefault("ARHA_PASSPHRASE", "test-passphrase-for-ci-only")
 
-# Use SQLite in-memory DB for tests
-TEST_DATABASE_URL = "sqlite+aiosqlite:///./test_arha.db"
-
-test_engine = create_async_engine(TEST_DATABASE_URL, echo=False)
-TestSessionLocal = async_sessionmaker(
-    test_engine, class_=AsyncSession, expire_on_commit=False
-)
-
-
-async def override_get_db():
-    async with TestSessionLocal() as session:
-        yield session
-
-
-app.dependency_overrides[get_db] = override_get_db
+from app.main import app  # noqa: E402  (import after env setup)
 
 
 @pytest.fixture(scope="session")
-def event_loop():
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+def anyio_backend():
+    return "asyncio"
 
 
-@pytest_asyncio.fixture(scope="session", autouse=True)
-async def setup_db():
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    yield
-    async with test_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-
-
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture()
 async def client():
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as ac:
-        yield ac
+    """
+    HTTPX async test client with all db calls patched out.
+    Tests exercise routing, serialisation, and auth logic
+    without requiring a real PostgreSQL instance.
+    """
+    with (
+        patch("app.db.init_db", new_callable=AsyncMock),
+        patch("app.db.close_db", new_callable=AsyncMock),
+        patch("app.db.create_user", new_callable=AsyncMock) as mock_create_user,
+        patch("app.db.get_user_by_email", new_callable=AsyncMock) as mock_get_email,
+        patch("app.db.get_user_by_id", new_callable=AsyncMock) as mock_get_id,
+        patch("app.db.save_resume", new_callable=AsyncMock),
+        patch("app.db.get_resume", new_callable=AsyncMock),
+        patch("app.db.create_application", new_callable=AsyncMock),
+        patch("app.db.get_user_applications", new_callable=AsyncMock) as mock_apps,
+        patch("app.db.get_opportunities", new_callable=AsyncMock) as mock_opps,
+    ):
+        # Provide sensible default returns
+        mock_create_user.return_value = {"id": 1, "email": "test@example.com", "role": "user"}
+        mock_get_email.return_value = None  # default: user not found (register will create)
+        mock_get_id.return_value = {"id": 1, "email": "test@example.com", "role": "user"}
+        mock_apps.return_value = []
+        mock_opps.return_value = []
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            yield ac
 
 
-@pytest_asyncio.fixture
+@pytest_asyncio.fixture()
 async def auth_headers(client: AsyncClient):
-    """Register a test user and return auth headers."""
-    reg = await client.post(
-        "/auth/register",
-        json={
-            "email": "test@arha.dev",
-            "password": "TestPass123!",
-            "full_name": "Test User",
+    """Return Authorization headers for a registered + logged-in test user."""
+    from app.auth import get_password_hash, create_access_token
+    from datetime import timedelta
+
+    with patch(
+        "app.db.get_user_by_email",
+        new_callable=AsyncMock,
+        return_value={
+            "id": 1,
+            "email": "test@example.com",
+            "role": "user",
+            "password_hash": get_password_hash("testpassword"),
         },
-    )
-    # May already exist on second run
-    login = await client.post(
-        "/auth/login",
-        data={"username": "test@arha.dev", "password": "TestPass123!"},
-    )
-    token = login.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    ):
+        token = create_access_token(
+            {"sub": "1", "role": "user"}, expires_delta=timedelta(minutes=60)
+        )
+        return {"Authorization": f"Bearer {token}"}
