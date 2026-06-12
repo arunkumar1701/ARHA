@@ -1,18 +1,74 @@
+# backend/app/config.py
+# All configuration via environment variables — zero hardcoded secrets
+from __future__ import annotations
+from functools import lru_cache
 from pathlib import Path
-import os
+from pydantic_settings import BaseSettings
+from pydantic import field_validator
 
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-DATA_DIR = Path(os.getenv("ARHA_DATA_DIR", BASE_DIR / "data"))
-DB_PATH = Path(os.getenv("ARHA_DB_PATH", DATA_DIR / "arha.sqlite3"))
-UPLOAD_DIR = Path(os.getenv("ARHA_UPLOAD_DIR", DATA_DIR / "uploads"))
-SALT_PATH = Path(os.getenv("ARHA_SALT_PATH", DATA_DIR / "arha.salt"))
-PASSPHRASE = os.getenv("ARHA_PASSPHRASE", "arha-local-development-passphrase")
+class Settings(BaseSettings):
+    # ── Core ────────────────────────────────────────────────────────────────
+    arha_env: str = "production"
 
-INSUFFICIENT_INFO = "I do not currently have sufficient verified information to complete this request."
-SCORING_FORMULA_VERSION = "arha-v1-deterministic-2026-06-11"
+    # ── Security / JWT ───────────────────────────────────────────────────────
+    secret_key: str = "CHANGE_ME_IN_PRODUCTION_USE_32+_CHARS"
+    algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60
+
+    # ── Encryption (Fernet) ──────────────────────────────────────────────────
+    arha_passphrase: str = "CHANGE_ME_IN_PRODUCTION"
+
+    # ── Database (Neon / Supabase PostgreSQL) ────────────────────────────────
+    database_url: str = "postgresql+asyncpg://user:pass@localhost/arha"
+
+    # ── Frontend ─────────────────────────────────────────────────────────────
+    arha_frontend_url: str = "https://arha-seven.vercel.app"
+
+    # ── OpenAI ───────────────────────────────────────────────────────────────
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+
+    # ── Company Intelligence ─────────────────────────────────────────────────
+    tavily_api_key: str = ""
+    serper_api_key: str = ""
+
+    # ── Caching (Upstash Redis) ──────────────────────────────────────────────
+    upstash_redis_url: str = ""
+    upstash_redis_token: str = ""
+
+    # ── Notifications ────────────────────────────────────────────────────────
+    sendgrid_api_key: str = ""
+    sendgrid_from_email: str = "noreply@arha.ai"
+    telegram_bot_token: str = ""
+    admin_email: str = ""
+
+    # ── Rate Limiting ────────────────────────────────────────────────────────
+    rate_limit_per_minute: int = 30
+
+    # ── File Storage (ephemeral /tmp on Render) ──────────────────────────────
+    upload_dir: Path = Path("/tmp/arha_uploads")
+
+    @field_validator("upload_dir", mode="before")
+    @classmethod
+    def create_upload_dir(cls, v: str | Path) -> Path:
+        p = Path(v)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+    model_config = {"env_file": ".env", "case_sensitive": False}
+
+
+@lru_cache()
+def get_settings() -> Settings:
+    return Settings()
+
+
+# ── Shared constants ─────────────────────────────────────────────────────────
+INSUFFICIENT_INFO = (
+    "I do not currently have sufficient verified information to complete this request."
+)
 
 
 def ensure_data_dirs() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    get_settings().upload_dir.mkdir(parents=True, exist_ok=True)
