@@ -1,19 +1,24 @@
+"""
+routers/auth.py - Registration, login, and profile endpoints.
+Uses async db helpers and JWT from app.auth. No ORM dependencies.
+"""
+from __future__ import annotations
+
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, status
+
+from fastapi import APIRouter, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from fastapi import Depends
 from pydantic import BaseModel, EmailStr
 
-from app.database import get_db
-from app.models import User
 from app.auth import (
-    verify_password,
-    get_password_hash,
-    create_access_token,
-    get_current_user,
     ACCESS_TOKEN_EXPIRE_MINUTES,
+    CurrentUser,
+    create_access_token,
+    get_password_hash,
+    verify_password,
 )
+from app.db import create_user, get_user_by_email
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -21,73 +26,69 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 class UserRegister(BaseModel):
     email: EmailStr
     password: str
-    full_name: str
 
 
-class UserResponse(BaseModel):
+class UserOut(BaseModel):
     id: int
     email: str
-    full_name: str
-    is_active: bool
-
-    class Config:
-        from_attributes = True
+    role: str
 
 
 class Token(BaseModel):
     access_token: str
     token_type: str
-    user: UserResponse
+    user: UserOut
 
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(payload: UserRegister, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.email == payload.email))
-    existing = result.scalar_one_or_none()
-    if existing:
+@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+async def register(payload: UserRegister):
+    hashed = get_password_hash(payload.password)
+    try:
+        user = await create_user(email=payload.email, password_hash=hashed)
+    except ValueError:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Email already registered",
+            detail="Email already registered.",
         )
-    user = User(
-        email=payload.email,
-        hashed_password=get_password_hash(payload.password),
-        full_name=payload.full_name,
-    )
-    db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return user
+    return UserOut(id=user["id"], email=user["email"], role=user["role"])
 
 
-@router.post("/login", response_model=Token)
-async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(User).where(User.email == form_data.username))
-    user = result.scalar_one_or_none()
-    if not user or not verify_password(form_data.password, user.hashed_password):
+@router.post("/token", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = await get_user_by_email(form_data.username)
+    if not user or not verify_password(form_data.password, user["password_hash"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid credentials",
+            detail="Invalid credentials.",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    if not user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account disabled")
     token = create_access_token(
-        data={"sub": str(user.id)},
+        data={"sub": str(user["id"]), "role": user["role"]},
         expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
     )
-    return {"access_token": token, "token_type": "bearer", "user": user}
+    return Token(
+        access_token=token,
+        token_type="bearer",
+        user=UserOut(id=user["id"], email=user["email"], role=user["role"]),
+    )
 
 
-@router.get("/me", response_model=UserResponse)
-async def me(current_user: User = Depends(get_current_user)):
-    return current_user
+# Alias /login -> /token for convenience
+@router.post("/login", response_model=Token, include_in_schema=False)
+async def login_alias(form_data: OAuth2PasswordRequestForm = Depends()):
+    return await login(form_data)
+
+
+@router.get("/me", response_model=UserOut)
+async def me(current_user: CurrentUser):
+    return UserOut(
+        id=current_user["id"],
+        email=current_user["email"],
+        role=current_user["role"],
+    )
 
 
 @router.post("/logout")
 async def logout():
-    # JWT is stateless; client discards token
-    return {"message": "Logged out successfully"}
+    # JWT is stateless; client discards the token.
+    return {"message": "Logged out successfully."}
