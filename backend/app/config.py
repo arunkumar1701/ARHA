@@ -72,3 +72,22 @@ INSUFFICIENT_INFO = (
 
 def ensure_data_dirs() -> None:
     get_settings().upload_dir.mkdir(parents=True, exist_ok=True)
+
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton — import this everywhere
+# Uppercase aliases for compatibility with code using settings.SECRET_KEY etc.
+# ---------------------------------------------------------------------------
+settings: Settings = get_settings()
+
+# Uppercase shims (read-only property equivalents via module attribute)
+# These allow `from .config import settings; settings.SECRET_KEY` to work.
+Settings.SECRET_KEY = property(lambda self: self.secret_key)  # type: ignore[attr-defined]
+Settings.ALGORITHM = property(lambda self: self.algorithm)  # type: ignore[attr-defined]
+Settings.ACCESS_TOKEN_EXPIRE_MINUTES = property(  # type: ignore[attr-defined]
+    lambda self: self.access_token_expire_minutes
+)
+Settings.DATABASE_URL = property(lambda self: self.database_url)  # type: ignore[attr-defined]
+Settings.OPENAI_API_KEY = property(lambda self: self.openai_api_key)  # type: ignore[attr-defined]
+Settings.TAVILY_API_KEY = property(lambda self: self.tavily_api_key)  # type: ignore[attr-defined]
