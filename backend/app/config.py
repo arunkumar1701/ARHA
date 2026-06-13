@@ -27,7 +27,7 @@ class Settings(BaseSettings):
 
     # ── OpenAI ───────────────────────────────────────────────────────────────
     openai_api_key: str = ""
-            ai_model: str = "gpt-4o"
+            : str = "gpt-4o"
 
     # ── Company Intelligence ─────────────────────────────────────────────────
     tavily_api_key: str = ""
