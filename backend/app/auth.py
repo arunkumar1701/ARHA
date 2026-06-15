@@ -106,6 +106,10 @@ async def get_current_active_user(
     return current_user
 
 
+# Convenience type alias used by routers
+CurrentUser = Annotated[dict, Depends(get_current_user)]
+
+
 def require_role(*roles: str):
     """Dependency factory: raise 403 if user's role not in *roles."""
 
