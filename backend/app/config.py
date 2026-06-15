@@ -70,12 +70,6 @@ class Settings(BaseSettings):
             "SECRET_KEY": self.secret_key,
             "ARHA_PASSPHRASE": self.arha_passphrase,
             "OPENAI_API_KEY": self.openai_api_key,
-            "TAVILY_API_KEY": self.tavily_api_key,
-            "SERPER_API_KEY": self.serper_api_key,
-            "UPSTASH_REDIS_URL": self.upstash_redis_url,
-            "UPSTASH_REDIS_TOKEN": self.upstash_redis_token,
-            "SENDGRID_API_KEY": self.sendgrid_api_key,
-            "TELEGRAM_BOT_TOKEN": self.telegram_bot_token,
         }
         missing = [name for name, value in required.items() if not value.strip()]
         if missing:
