@@ -22,7 +22,7 @@ from .db import get_user_by_email, get_user_by_id
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 
-ACCESS_TOKEN_EXPIRE_MINUTES: int = settings.ACCESS_TOKEN_EXPIRE_MINUTES
+ACCESS_TOKEN_EXPIRE_MINUTES: int = settings.access_token_expire_minutes
 
 
 class TokenData(BaseModel):
@@ -47,71 +47,76 @@ def get_password_hash(plain: str) -> str:
 hash_password = get_password_hash
 
 
+# ---------------------------------------------------------------------------
+# JWT helpers
+# ---------------------------------------------------------------------------
+
 def create_access_token(
-    data: dict[str, Any], expires_delta: timedelta | None = None
+    data: dict[str, Any],
+    expires_delta: timedelta | None = None,
 ) -> str:
     to_encode = data.copy()
     expire = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta if expires_delta else timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     )
-    to_encode["exp"] = expire
-    return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, settings.secret_key, algorithm=settings.algorithm)
 
 
-def decode_token(token: str) -> dict[str, Any]:
-    """Decode a JWT and return the payload, raising HTTPException on failure."""
+def decode_token(token: str) -> TokenData:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials.",
+        detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        return payload
+        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        sub: str | None = payload.get("sub")
+        role: str = payload.get("role", "user")
+        if sub is None:
+            raise credentials_exception
+        return TokenData(sub=sub, role=role)
     except JWTError:
         raise credentials_exception
 
 
+# ---------------------------------------------------------------------------
+# FastAPI dependency: current user
+# ---------------------------------------------------------------------------
+
 async def get_current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
-) -> dict[str, Any]:
-    """FastAPI dependency: decode JWT and load user from PostgreSQL."""
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    payload = decode_token(token)
-    user_id_str: str | None = payload.get("sub")
-    if not user_id_str:
-        raise credentials_exception
-    try:
-        user_id = int(user_id_str)
-    except ValueError:
-        raise credentials_exception
-    user = await get_user_by_id(user_id)
+) -> dict:
+    token_data = decode_token(token)
+    user = await get_user_by_id(int(token_data.sub))
     if user is None:
-        raise credentials_exception
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     return user
 
 
 async def get_current_active_user(
     current_user: Annotated[dict, Depends(get_current_user)],
-) -> dict[str, Any]:
+) -> dict:
+    if current_user.get("is_active") is False:
+        raise HTTPException(status_code=400, detail="Inactive user")
     return current_user
 
 
-async def require_admin(
-    current_user: Annotated[dict, Depends(get_current_active_user)],
-) -> dict[str, Any]:
-    if current_user.get("role") != "admin":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Admin access required.",
-        )
-    return current_user
+def require_role(*roles: str):
+    """Dependency factory: raise 403 if user's role not in *roles."""
 
+    async def role_checker(
+        current_user: Annotated[dict, Depends(get_current_user)],
+    ) -> dict:
+        if current_user.get("role") not in roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions",
+            )
+        return current_user
 
-# Type aliases for dependency injection
-CurrentUser = Annotated[dict, Depends(get_current_active_user)]
-AdminUser = Annotated[dict, Depends(require_admin)]
+    return role_checker
